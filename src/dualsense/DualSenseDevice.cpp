@@ -15,6 +15,26 @@ static constexpr int    POWER_BYTE     = 53;
 static constexpr BYTE   POWERSTATE_CHARGING = 0x01;
 static constexpr BYTE   POWERSTATE_COMPLETE  = 0x02;
 
+#ifndef HIDP_STATUS_SUCCESS
+#define HIDP_STATUS_SUCCESS ((NTSTATUS)0x00110000L)
+#endif
+
+// 0.8.0 起 DS5Dongle 在 Sony VID/PID 下额外暴露唤醒键盘与 Consumer Control 两个 HID 集合，
+// 且 SetupDi 枚举顺序中 Consumer 可能排在手柄之前。只有 UsagePage 0x01 / Usage 0x05
+// 的游戏手柄集合承载 Input Report 0x01（电量所在报告），必须按 Usage 精确匹配。
+static bool IsGamepadCollection(HANDLE h)
+{
+    PHIDP_PREPARSED_DATA preparsed = nullptr;
+    if (!HidD_GetPreparsedData(h, &preparsed) || !preparsed)
+        return false;
+    HIDP_CAPS caps{};
+    NTSTATUS status = HidP_GetCaps(preparsed, &caps);
+    HidD_FreePreparsedData(preparsed);
+    return status == HIDP_STATUS_SUCCESS &&
+           caps.UsagePage == 0x01 && caps.Usage == 0x05 &&
+           caps.InputReportByteLength >= POWER_BYTE + 1;
+}
+
 DualSenseDevice::DualSenseDevice() = default;
 
 DualSenseDevice::~DualSenseDevice()
@@ -61,8 +81,8 @@ bool DualSenseDevice::Open(const std::wstring& device_path)
 
 bool DualSenseDevice::IsPresent()
 {
-    // 枚举 HID 设备接口，打开后按 VID/PID 匹配（与探针同款，已验证可靠）。
-    // 仅做 CreateFile + HidD_GetAttributes + CloseHandle，不读写数据，无副作用。
+    // 枚举 HID 设备接口，打开后按 VID/PID + 手柄集合 Usage 匹配。
+    // 仅做 CreateFile + HidD_GetAttributes + HidP_GetCaps + CloseHandle，不读写数据，无副作用。
     GUID hid_guid = GUID_DEVINTERFACE_HID;
     HDEVINFO dev_info = SetupDiGetClassDevsW(&hid_guid, nullptr, nullptr,
                                              DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -94,7 +114,8 @@ bool DualSenseDevice::IsPresent()
         attr.Size = sizeof(attr);
         if (HidD_GetAttributes(h, &attr) &&
             attr.VendorID == SONY_VID &&
-            (attr.ProductID == DS_PID || attr.ProductID == EDGE_PID))
+            (attr.ProductID == DS_PID || attr.ProductID == EDGE_PID) &&
+            IsGamepadCollection(h))
         {
             found = true;
             CloseHandle(h);
@@ -120,7 +141,8 @@ bool DualSenseDevice::OpenPath(const std::wstring& path)
     HIDD_ATTRIBUTES attr{};
     attr.Size = sizeof(attr);
     if (!HidD_GetAttributes(h, &attr) || attr.VendorID != SONY_VID ||
-        (attr.ProductID != DS_PID && attr.ProductID != EDGE_PID))
+        (attr.ProductID != DS_PID && attr.ProductID != EDGE_PID) ||
+        !IsGamepadCollection(h))
     {
         CloseHandle(h);
         return false;

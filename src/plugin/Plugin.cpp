@@ -328,7 +328,7 @@ const wchar_t* Plugin::GetInfo(PluginInfoIndex index)
     case TMI_COPYRIGHT:
         return L"MIT License";
     case TMI_VERSION:
-        return L"0.2.0";
+        return L"0.2.1";
     default:
         break;
     }
