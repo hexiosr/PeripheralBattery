@@ -73,7 +73,7 @@ inline BatMetrics BatSize(HDC hdc)
     if (m.bolt_w < 4) m.bolt_w = 4;
     HFONT df = MakeDigitFont(hdc, m.body_h - 4);
     HGDIOBJ of = SelectObject(hdc, df);
-    m.body_w = TextW(hdc, L"100") + 6;
+    m.body_w = TextW(hdc, L"100") + 12;
     SelectObject(hdc, of);
     DeleteObject(df);
     int min_w = m.body_h * 3 / 2;
