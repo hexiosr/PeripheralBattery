@@ -1,7 +1,7 @@
 #pragma once
 // ============================================================
 // BatteryDraw.h —— 任务栏外设电量绘制（GDI + GDI+ 圆环）
-// 一段 = 名称: [电量圆环(内含百分比/充电图标)]；设备间细竖线分隔。
+// 一段 = 名称: [电量圆环(内含百分比/充电图标)]，设备间用短弱化分隔线；
 //  - 圆环用 GDI+ 抗锯齿绘制（连续曲率，无锯齿），按比例顺时针描弧
 //  - 配色：≥60% 绿 / 20~59% 黄 / <20% 红（淡灰轨道）
 //  - 百分比加粗画在圆环内孔中央（不显示 %）；充电时环内改画 ⚡
@@ -25,7 +25,7 @@ struct DeviceDisplay
 namespace batdraw {
 
 constexpr int kPadLR = 1;      // 左右内边距（TrafficMonitor 自带条目文字从槽位左缘起始，内边距越大插件条目越显右移）
-constexpr int kSepW = 17;      // 设备分隔宽度（8 + 1px 竖线 + 8）
+constexpr int kSepW = 14;      // 设备分隔宽度（短分隔线 + 两侧留白）
 
 // 段内间距：随字号缩放（高 DPI 下不显得拥挤）
 inline int GapFor(HDC hdc)
@@ -47,6 +47,12 @@ inline int TextW(HDC hdc, const wchar_t* s)
 inline COLORREF MutedColor(bool dark)
 {
     return dark ? RGB(152, 152, 158) : RGB(118, 118, 124);
+}
+
+// 段间短分隔线：比文字更轻，只做分组提示
+inline COLORREF SepColor(bool dark)
+{
+    return dark ? RGB(112, 112, 118) : RGB(176, 176, 182);
 }
 
 // 跟随当前字体族、按给定像素高度/字重创建字体
@@ -147,7 +153,7 @@ struct SegMetrics
     int gap_colon = 1;  // 中文冒号自带右侧留白，后面只补很小间距
     int name_w = 0;     // 名称宽
     int colon_w = 0;    // 名称后冒号宽
-    int total = 0;     // 段总宽
+    int total = 0;      // 段总宽
 };
 
 inline SegMetrics MeasureSeg(HDC hdc, const DeviceDisplay& d)
@@ -311,7 +317,7 @@ inline void DrawPercent(HDC dc, int ring_cx, int y, int h, const RingMetrics& rm
     DeleteObject(nf);
 }
 
-// 绘制整个显示项：竖排居中，段间细分隔线
+// 绘制整个显示项：竖排居中，设备间短弱化分隔线
 inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
                          const DeviceDisplay* list, int n)
 {
@@ -336,12 +342,14 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
         const DeviceDisplay& d = list[i];
         SegMetrics m = MeasureSeg(dc, d);
 
-        if (i > 0) // 设备间细竖线（与文字同色，视觉上融入文本行）
+        if (i > 0)
         {
-            HPEN pen = CreatePen(PS_SOLID, 1, text_col);
+            // 短分隔线：弱化灰、上下缩进，不切断整行视觉
+            HPEN pen = CreatePen(PS_SOLID, 1, SepColor(dark));
             HGDIOBJ op = SelectObject(dc, pen);
-            MoveToEx(dc, cx + kSepW / 2, y + 4, nullptr);
-            LineTo(dc, cx + kSepW / 2, y + h - 4);
+            int sx = cx + kSepW / 2;
+            MoveToEx(dc, sx, y + h / 4, nullptr);
+            LineTo(dc, sx, y + h - h / 4);
             SelectObject(dc, op);
             DeleteObject(pen);
             cx += kSepW;

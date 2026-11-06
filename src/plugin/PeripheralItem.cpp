@@ -29,7 +29,7 @@ const wchar_t* PeripheralItem::GetItemValueSampleText() const
 
 bool PeripheralItem::IsCustomDraw() const
 {
-    return true; // 自绘：电池图形 + 电量配色 + 分隔线，纯字符文本无法实现
+    return true; // 自绘：电量圆环 + 电量配色 + 短分隔线，纯字符文本无法实现
 }
 
 int PeripheralItem::GetItemWidth() const
