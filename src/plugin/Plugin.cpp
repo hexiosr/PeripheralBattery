@@ -199,13 +199,11 @@ static void AppendUpdatedAgo(const BatterySnapshot& snap, std::wstring& out)
     out += buf;
 }
 
-// 悬停提示为一行式：图标 型号（产品名）：状态 · 更新时间
+// 悬停提示为一行式：图标 型号：状态 · 更新时间
 void Plugin::BuildKeyboardTooltip(const BatterySnapshot& snap, std::wstring& out)
 {
     out += kTipIconKb;
     out += kDevices[0].name;
-    if (!snap.product.empty())
-        out += L"（" + snap.product + L"）";
 
     // 未检测到 / 离线 / 尚无上报，统一显示"未连接"
     if (!snap.has_device || !snap.online || !snap.valid)
@@ -226,8 +224,6 @@ void Plugin::BuildMouseTooltip(const BatterySnapshot& snap, std::wstring& out)
 {
     out += kTipIconMs;
     out += kDevices[1].name;
-    if (!snap.product.empty())
-        out += L"（" + snap.product + L"）";
 
     if (!snap.has_device || !snap.online || !snap.valid)
         out += L"：未连接";
