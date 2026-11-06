@@ -6,15 +6,17 @@
 // ============ 设备条目表 ============
 // 新增设备：1) 在下面表里加一行 2) 实现对应 Reader 并加入 Plugin 3) kDeviceCount +1
 // 选项对话框会自动按此表生成勾选项，无需改界面代码。
+// name 是任务栏显示名（用型号名而非"键盘/鼠标"这类类别名）；
+// 接收器 HID 产品字符串不一定是型号（G87 的接收器只报 "MCHOSE 2.4G Wireless"），故固定配置。
 struct DeviceEntry {
-    const wchar_t* name; // 任务栏前缀名
-    const wchar_t* desc; // 选项列表里显示的全名
+    const wchar_t* name; // 任务栏显示名（型号）
+    const wchar_t* desc; // 选项列表里显示的名字（与任务栏一致）
 };
 const DeviceEntry kDevices[kDeviceCount] = {
-    { L"键盘", L"键盘电量（迈从 G87）" },
-    { L"鼠标", L"鼠标电量（迈从 A5 Ultra）" },
-    { L"G7 Pro", L"G7 Pro 手柄电量（盖世小鸡）" },
-    { L"DS5",  L"PS5 手柄电量（DualSense）" },
+    { L"G87",      L"G87" },
+    { L"A5 Ultra", L"A5 Ultra" },
+    { L"G7 Pro",   L"G7 Pro" },
+    { L"DS5",      L"DS5" },
 };
 
 // 悬停提示的设备图标前缀（GDI 字体链接渲染为单色符号；
@@ -29,7 +31,10 @@ Plugin::Plugin()
 {
     // 预填显示数组：首次 DataRequired 之前，自绘也能按完整布局计算宽度
     for (int i = 0; i < kDeviceCount; ++i)
+    {
         m_display[i].name = kDevices[i].name;
+        m_order[i] = kDefaultOrder[i];
+    }
     m_display_count = kDeviceCount;
 }
 
@@ -42,7 +47,7 @@ IPluginItem* Plugin::GetItem(int index)
 {
     switch (index)
     {
-    case 0: return &m_item;    // 外设电量显示（组合键盘 / 鼠标 / G7 Pro / PS5）
+    case 0: return &m_item;    // 外设电量显示（组合键盘 / 鼠标 / 手柄）
     default: return nullptr;
     }
 }
@@ -57,15 +62,19 @@ void Plugin::DataRequired()
 
 void Plugin::RefreshDisplay()
 {
-    std::wstring kb_txt, ms_txt, g7_txt, ds_txt;
-    BuildValueText(m_key_reader.GetSnapshot(), kb_txt);
-    BuildValueText(m_mouse_reader.GetSnapshot(), ms_txt);
-    BuildG7ValueText(m_g7_reader.GetSnapshot(), g7_txt); // G7 用电池图标（4 档）
-    BuildValueText(m_ds_reader.GetSnapshot(), ds_txt);
-    if (ds_txt == L"--%")
-        ds_txt = L"未连接"; // PS5 断开（PnP 检测）时显示"未连接"
+    const BatterySnapshot kb = m_key_reader.GetSnapshot();
+    const BatterySnapshot ms = m_mouse_reader.GetSnapshot();
+    const BatterySnapshot g7 = m_g7_reader.GetSnapshot();
+    const BatterySnapshot ds = m_ds_reader.GetSnapshot();
 
-    // 组合显示一块，按选项设置的勾选与顺序过滤设备
+    std::wstring kb_txt, ms_txt, g7_txt, ds_txt;
+    BuildValueText(kb, kb_txt);
+    BuildValueText(ms, ms_txt);
+    BuildG7ValueText(g7, g7_txt); // G7 用电池图标（4 档）
+    BuildValueText(ds, ds_txt);
+
+    // 组合显示一块，按选项设置的勾选与顺序过滤设备。
+    // 每个条目勾选即显示（含手柄）：已连接显示电量，未连接显示 --（与键鼠一致）。
     std::wstring val;
     auto append = [&](const std::wstring& seg) {
         if (!val.empty())
@@ -76,8 +85,9 @@ void Plugin::RefreshDisplay()
     for (int i = 0; i < kDeviceCount; ++i)
     {
         int dev = m_order[i];
-        if (m_show[dev])
-            append(std::wstring(kDevices[dev].name) + L": " + *txts[dev]);
+        if (!m_show[dev])
+            continue;
+        append(std::wstring(kDevices[dev].name) + L": " + *txts[dev]);
     }
     if (val.empty())
         val = L"已全部关闭";
@@ -91,10 +101,10 @@ void Plugin::RefreshDisplay()
             continue;
         switch (dev)
         {
-        case 0: BuildKeyboardTooltip(m_key_reader.GetSnapshot(), tip); break;
-        case 1: BuildMouseTooltip(m_mouse_reader.GetSnapshot(), tip); break;
-        case 2: BuildG7Tooltip(m_g7_reader.GetSnapshot(), tip); break;
-        case 3: BuildDualSenseTooltip(m_ds_reader.GetSnapshot(), tip); break;
+        case 0: BuildKeyboardTooltip(kb, tip); break;
+        case 1: BuildMouseTooltip(ms, tip); break;
+        case 2: BuildPadTooltip(kDevices[dev].name, g7, tip); break;
+        case 3: BuildPadTooltip(kDevices[dev].name, ds, tip); break;
         }
         tip += L'\n';
     }
@@ -103,7 +113,7 @@ void Plugin::RefreshDisplay()
     m_tooltip = tip;
 
     // 自绘显示数据（与上面文本同序：仅勾选设备）
-    // 键盘/鼠标无读数 → 空电池 + --；G7/DS5 无读数 → 未连接（×）
+    // 未连接 / 暂无读数统一为：空圆环 + --（手柄与键鼠一致）
     m_display_count = 0;
     for (int i = 0; i < kDeviceCount; ++i)
     {
@@ -113,48 +123,21 @@ void Plugin::RefreshDisplay()
         DeviceDisplay& d = m_display[m_display_count++];
         d = DeviceDisplay{};
         d.name = kDevices[dev].name;
-        switch (dev)
+        if (dev == 2 || dev == 3)
         {
-        case 0: {
-            const BatterySnapshot s = m_key_reader.GetSnapshot();
-            if (s.has_device && s.online && s.valid)
-            {
-                d.percent = s.percent;
-                d.charging = s.charging;
-            }
-            break;
-        }
-        case 1: {
-            const BatterySnapshot s = m_mouse_reader.GetSnapshot();
-            if (s.has_device && s.online && s.valid)
-            {
-                d.percent = s.percent;
-                d.charging = s.charging;
-            }
-            break;
-        }
-        case 2: {
-            const BatterySnapshot s = m_g7_reader.GetSnapshot();
+            const BatterySnapshot& s = (dev == 2) ? g7 : ds;
             if (s.valid)
             {
                 d.percent = s.percent;
                 d.charging = s.charging;
             }
-            else
-                d.absent = true;
-            break;
+            continue;
         }
-        case 3: {
-            const BatterySnapshot s = m_ds_reader.GetSnapshot();
-            if (s.valid)
-            {
-                d.percent = s.percent;
-                d.charging = s.charging;
-            }
-            else
-                d.absent = true;
-            break;
-        }
+        const BatterySnapshot& s = (dev == 0) ? kb : ms;
+        if (s.has_device && s.online && s.valid)
+        {
+            d.percent = s.percent;
+            d.charging = s.charging;
         }
     }
 }
@@ -165,7 +148,7 @@ void Plugin::BuildG7ValueText(const BatterySnapshot& snap, std::wstring& out)
 {
     if (!snap.valid || snap.percent < 0)
     {
-        out = L"未连接";
+        out = L"--%"; // 未连接 / 暂无读数：与键鼠一致
         return;
     }
 
@@ -216,20 +199,17 @@ static void AppendUpdatedAgo(const BatterySnapshot& snap, std::wstring& out)
     out += buf;
 }
 
-// 悬停提示为一行式：图标 名称（产品名）：状态 · 更新时间
+// 悬停提示为一行式：图标 型号（产品名）：状态 · 更新时间
 void Plugin::BuildKeyboardTooltip(const BatterySnapshot& snap, std::wstring& out)
 {
     out += kTipIconKb;
-    out += L"键盘";
+    out += kDevices[0].name;
     if (!snap.product.empty())
         out += L"（" + snap.product + L"）";
 
-    if (!snap.has_device)
-        out += L"：未检测到接收器";
-    else if (!snap.online)
-        out += L"：离线/无响应";
-    else if (!snap.valid)
-        out += L"：等待上报…";
+    // 未检测到 / 离线 / 尚无上报，统一显示"未连接"
+    if (!snap.has_device || !snap.online || !snap.valid)
+        out += L"：未连接";
     else
     {
         wchar_t buf[32];
@@ -245,16 +225,12 @@ void Plugin::BuildKeyboardTooltip(const BatterySnapshot& snap, std::wstring& out
 void Plugin::BuildMouseTooltip(const BatterySnapshot& snap, std::wstring& out)
 {
     out += kTipIconMs;
-    out += L"鼠标";
+    out += kDevices[1].name;
     if (!snap.product.empty())
         out += L"（" + snap.product + L"）";
 
-    if (!snap.has_device)
-        out += L"：未检测到接收器";
-    else if (!snap.online)
-        out += L"：离线/无响应";
-    else if (!snap.valid)
-        out += L"：等待上报…";
+    if (!snap.has_device || !snap.online || !snap.valid)
+        out += L"：未连接";
     else
     {
         wchar_t buf[32];
@@ -267,41 +243,14 @@ void Plugin::BuildMouseTooltip(const BatterySnapshot& snap, std::wstring& out)
     }
 }
 
-void Plugin::BuildG7Tooltip(const BatterySnapshot& snap, std::wstring& out)
+// 手柄悬停提示：图标 名称：状态 · 更新时间
+void Plugin::BuildPadTooltip(const wchar_t* label, const BatterySnapshot& snap, std::wstring& out)
 {
     out += kTipIconPad;
-    out += L"G7 Pro";
+    out += label;
 
-    if (!snap.has_device)
-        out += L"：未检测到接收器";
-    else if (!snap.valid)
-        out += L"：未连接";
-    else
-    {
-        int bars = 1;
-        if (snap.percent >= 100) bars = 4;
-        else if (snap.percent >= 66) bars = 3;
-        else if (snap.percent >= 33) bars = 2;
-        out += L"：";
-        for (int i = 0; i < 4; ++i)
-            out += (i < bars) ? L"\u25AE" : L"\u25AF"; // ▮ / ▯
-        wchar_t buf[32];
-        swprintf_s(buf, L" %d%%", snap.percent);
-        out += buf;
-        if (snap.charging)
-            out += L" \u26A1充电中"; // ⚡
-        AppendUpdatedAgo(snap, out);
-    }
-}
-
-void Plugin::BuildDualSenseTooltip(const BatterySnapshot& snap, std::wstring& out)
-{
-    out += kTipIconPad;
-    out += L"PS5";
-
-    if (!snap.has_device)
-        out += L"：未检测到 DualSense（DS5Dongle 桥接）";
-    else if (!snap.valid)
+    // 未检测到接收器 / 离线 / 已断开，统一显示"未连接"
+    if (!snap.has_device || !snap.online || !snap.valid)
         out += L"：未连接";
     else
     {
@@ -328,7 +277,7 @@ const wchar_t* Plugin::GetInfo(PluginInfoIndex index)
     case TMI_COPYRIGHT:
         return L"MIT License";
     case TMI_VERSION:
-        return L"0.2.1";
+        return L"0.3.0";
     default:
         break;
     }
@@ -366,10 +315,10 @@ void Plugin::LoadConfig()
             m_show[d] = (buf[0] == L'1');
     }
 
-    // 显示顺序：order=0,2,1,3（设备索引，逗号分隔）
+    // 显示顺序：order=1,3,2,0（设备索引，逗号分隔；默认按型号字母序）
     wchar_t ord[64];
     for (int i = 0; i < kDeviceCount; ++i)
-        m_order[i] = i;
+        m_order[i] = kDefaultOrder[i];
     if (GetPrivateProfileStringW(L"Options", L"order", L"", ord, 64, path.c_str()) > 0)
     {
         int idx = 0;
@@ -497,7 +446,7 @@ void Plugin::DlgRestoreDefault()
     for (int d = 0; d < kDeviceCount; ++d)
     {
         m_dlg_show[d] = true;
-        m_dlg_order[d] = d;
+        m_dlg_order[d] = kDefaultOrder[d];
     }
 }
 
@@ -517,9 +466,9 @@ constexpr UINT IDC_CANCEL = 701;
 constexpr UINT IDC_APPLY = 702;
 
 // 布局（客户区坐标系）：列表白色卡片 + 右侧按钮列 + 底部确定/应用/取消
-constexpr int kDlgW = 520;                                        // 客户区宽
-constexpr int kListX = 16, kListY = 16, kListW = 360;             // 列表卡片位置
-constexpr int kRowHeight = 40;                                    // 列表行高
+constexpr int kDlgW = 400;                                        // 客户区宽（设备名较短，收紧）
+constexpr int kListX = 16, kListY = 16, kListW = 244;             // 列表卡片位置
+constexpr int kRowHeight = 34;                                    // 列表行高
 constexpr int kBtnW = 112, kBtnH = 32;                            // 按钮尺寸
 constexpr int kBottomY = kListY + kDeviceCount * kRowHeight + 16; // 底部按钮行 y
 constexpr int kDlgH = kBottomY + kBtnH + 16;                      // 客户区高
@@ -717,7 +666,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 SetTextColor(hdc, RGB(20, 20, 20));
                 RECT rcTxt = rc;
                 rcTxt.left += 44;
-                DrawTextW(hdc, kDevices[dev].desc, -1, &rcTxt, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                DrawTextW(hdc, kDevices[dev].desc, -1, &rcTxt, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                 return 0;
             }
 
@@ -903,10 +852,11 @@ ITMPlugin::OptionReturn Plugin::ShowOptionsDialog(void* hParent)
     };
 
     // 左侧设备列表：白色卡片、1px 扁平边框（对话框 WM_PAINT 绘制）、行高自适配无滚动条
-    // 点击左侧复选框切换勾选，点击行选中（支持上移/下移）
+    // LBS_NOINTEGRALHEIGHT：禁用系统按整行高度回缩窗口（否则 4 行会被压成 3 行）
     HWND hList = CreateWindowExW(0, L"LISTBOX", nullptr,
                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                     LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY,
+                                     LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY |
+                                     LBS_NOINTEGRALHEIGHT,
                                  kListX, kListY, kListW, kDeviceCount * kRowHeight,
                                  hDlg, (HMENU)(UINT_PTR)IDC_LIST, hInst, nullptr);
     SendMessageW(hList, WM_SETFONT, (WPARAM)hListFont, TRUE);

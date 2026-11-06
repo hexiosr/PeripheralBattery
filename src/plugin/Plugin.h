@@ -1,8 +1,10 @@
 #pragma once
 // ============================================================
 // Plugin.h —— 外设电量监控插件（ITMPlugin 实现）
-// 单个组合显示项：外设电量显示（键盘 / 鼠标 / G7 Pro / PS5），
-// 插件选项对话框中可勾选显示哪些设备，勾选结果持久化到 ini。
+// 单个组合显示项：外设电量显示（G87 / A5 Ultra / G7 Pro / DS5），
+// 任务栏直接用型号名，不显示"键盘/鼠标"类别名；
+// 插件选项对话框中可勾选显示哪些设备并调整顺序（勾选即显示），结果持久化到 ini；
+// 未勾选的设备不会启动后台轮询。
 // ============================================================
 #include "PluginInterface.h"
 #include "BatteryDraw.h"
@@ -15,6 +17,9 @@
 
 // 设备条目数量（与 Plugin.cpp 中 kDevices 表一一对应，新增设备时同步 +1）
 constexpr int kDeviceCount = 4;
+
+// 默认显示顺序（设备索引）：按型号名首字母 A → Z：A5 Ultra、DS5、G7 Pro、G87
+constexpr int kDefaultOrder[kDeviceCount] = { 1, 3, 2, 0 };
 
 class Plugin : public ITMPlugin
 {
@@ -62,8 +67,7 @@ private:
     void BuildG7ValueText(const BatterySnapshot& snap, std::wstring& out);
     void BuildKeyboardTooltip(const BatterySnapshot& snap, std::wstring& out);
     void BuildMouseTooltip(const BatterySnapshot& snap, std::wstring& out);
-    void BuildDualSenseTooltip(const BatterySnapshot& snap, std::wstring& out);
-    void BuildG7Tooltip(const BatterySnapshot& snap, std::wstring& out);
+    void BuildPadTooltip(const wchar_t* label, const BatterySnapshot& snap, std::wstring& out);
 
 private:
     static Plugin m_instance;
@@ -77,7 +81,7 @@ private:
 
     ITrafficMonitor* m_app = nullptr;
     bool m_show[kDeviceCount] = { true, true, true, true }; // 设备勾选状态
-    int m_order[kDeviceCount] = { 0, 1, 2, 3 };             // 显示顺序（设备索引）
+    int m_order[kDeviceCount] = {};                         // 显示顺序（设备索引，默认按字母序）
     bool m_dlg_show[kDeviceCount];                          // 选项对话框工作副本
     int m_dlg_order[kDeviceCount];
     bool m_option_changed = false;
@@ -86,8 +90,8 @@ private:
     int m_display_count = 0;
 
     // UI 线程缓存（由 DataRequired 更新，PeripheralItem::GetItemValueText 读取）
-    std::wstring m_value_text = L"键盘: --% | 鼠标: --% | 手柄: 未连接 | PS5: 未连接";
-    std::wstring m_sample_text = L"键盘: 100%\u26A1 | 鼠标: 100%\u26A1 | 手柄: \u25AE\u25AE\u25AE\u25AE\u26A1 | PS5: 100%\u26A1";
+    std::wstring m_value_text = L"G87: --% | A5 Ultra: --% | G7 Pro: --% | DS5: --%";
+    std::wstring m_sample_text = L"G87: 100%\u26A1 | A5 Ultra: 100%\u26A1 | G7 Pro: \u25AE\u25AE\u25AE\u25AE\u26A1 | DS5: 100%\u26A1";
     std::wstring m_tooltip;
 };
 

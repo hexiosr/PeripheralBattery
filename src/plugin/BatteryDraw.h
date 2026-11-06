@@ -1,12 +1,16 @@
 #pragma once
 // ============================================================
-// BatteryDraw.h —— 任务栏电池图形绘制与布局（纯 GDI，无插件依赖）
-// 一段 = 名称: [电池图形（内含电量数字与 ⚡ 充电，无百分号）]；设备间细竖线分隔。
-//  - 电量配色：≥60% 绿 / 20~59% 黄 / <20% 红（淡色填充 + 同色系数字）
-//  - 无读数 → 空电池 + --；未连接 → 整段弱化灰，显示"未连接"
-//  - 电池宽度按 "100" 数字固定，读数变化不引起任务栏宽度抖动
+// BatteryDraw.h —— 任务栏外设电量绘制（GDI + GDI+ 圆环）
+// 一段 = 名称: [电量圆环(内含百分比/充电图标)]；设备间细竖线分隔。
+//  - 圆环用 GDI+ 抗锯齿绘制（连续曲率，无锯齿），按比例顺时针描弧
+//  - 配色：≥60% 绿 / 20~59% 黄 / <20% 红（淡灰轨道）
+//  - 百分比加粗画在圆环内孔中央（不显示 %）；充电时环内改画 ⚡
+//  - 无读数 / 未连接 → 空圆环 + --（所有设备一致）
+//  - 圆环直径固定，读数 / 充电切换不引起任务栏宽度抖动
 // ============================================================
 #include <windows.h>
+#include <gdiplus.h>
+#include <cmath>
 #include <cstdio>
 #include <cwchar>
 
@@ -14,27 +18,23 @@
 struct DeviceDisplay
 {
     const wchar_t* name = L"";  // 前缀名
-    int  percent = -1;          // 电量百分比；-1 = 暂无读数
-    bool charging = false;      // 充电中（闪电嵌在电池内数字右侧）
-    bool absent = false;        // 未连接（整段弱化灰，只显示"未连接"）
+    int  percent = -1;          // 电量百分比；-1 = 暂无读数 / 未连接
+    bool charging = false;      // 充电中（环内画 ⚡，不显示数字）
 };
 
 namespace batdraw {
 
-constexpr int kPadLR = 1;    // 左右内边距（TrafficMonitor 自带条目文字从槽位左缘起始，内边距越大插件条目越显右移）
-constexpr int kGap = 3;      // 名称与电池的间距
-constexpr int kBoltPad = 2;  // 电池内闪电与数字的间距
-constexpr int kSepW = 17;    // 设备分隔宽度（8 + 1px 竖线 + 8）
+constexpr int kPadLR = 1;      // 左右内边距（TrafficMonitor 自带条目文字从槽位左缘起始，内边距越大插件条目越显右移）
+constexpr int kSepW = 17;      // 设备分隔宽度（8 + 1px 竖线 + 8）
 
-struct BatMetrics
+// 段内间距：随字号缩放（高 DPI 下不显得拥挤）
+inline int GapFor(HDC hdc)
 {
-    int body_w;       // 电池壳宽
-    int body_h;       // 电池壳高
-    int nub_w;        // 电极宽
-    int total_w;      // 壳 + 电极总宽
-    int bolt_w = 0;   // 电池内闪电宽（仅充电段计入壳宽）
-    int bolt_h = 0;   // 电池内闪电高
-};
+    TEXTMETRIC tm{};
+    GetTextMetrics(hdc, &tm);
+    int g = tm.tmHeight / 7;
+    return g < 3 ? 3 : g;
+}
 
 inline int TextW(HDC hdc, const wchar_t* s)
 {
@@ -49,38 +49,82 @@ inline COLORREF MutedColor(bool dark)
     return dark ? RGB(152, 152, 158) : RGB(118, 118, 124);
 }
 
-// 电池内数字用的小号字体（跟随当前字体族，按给定像素高度创建）
-inline HFONT MakeDigitFont(HDC hdc, int pixel_h)
+// 跟随当前字体族、按给定像素高度/字重创建字体
+inline HFONT MakeFont(HDC hdc, int pixel_h, int weight)
 {
     wchar_t face[64];
     GetTextFaceW(hdc, 64, face);
-    return CreateFontW(-pixel_h, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+    return CreateFontW(-pixel_h, 0, 0, 0, weight, 0, 0, 0,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
-// 电池尺寸按当前字体缩放（兼容不同 DPI / 任务栏字体）：
-// 高度约为文字行高的 3/4（比整行文字小一档）；宽度按小号字体最宽读数 "100" 定宽
-inline BatMetrics BatSize(HDC hdc)
+// 圆环尺寸按当前字体缩放（兼容不同 DPI / 任务栏字体）
+// 外径放大到约 1.5 倍字高，内孔才容得下百分比数字
+struct RingMetrics
+{
+    int dia;     // 外径（含描边）
+    int stroke;  // 环宽
+    int inner;   // 内孔直径
+};
+
+inline RingMetrics RingSize(HDC hdc)
 {
     TEXTMETRIC tm{};
     GetTextMetrics(hdc, &tm);
-    BatMetrics m;
-    m.body_h = tm.tmHeight * 3 / 4;
-    if (m.body_h < 11) m.body_h = 11;
-    m.bolt_h = (m.body_h - 4) * 3 / 4;
-    m.bolt_w = m.bolt_h * 7 / 10;
-    if (m.bolt_w < 4) m.bolt_w = 4;
-    HFONT df = MakeDigitFont(hdc, m.body_h - 4);
-    HGDIOBJ of = SelectObject(hdc, df);
-    m.body_w = TextW(hdc, L"100") + 12;
-    SelectObject(hdc, of);
-    DeleteObject(df);
-    int min_w = m.body_h * 3 / 2;
-    if (m.body_w < min_w) m.body_w = min_w;
-    m.nub_w = 2;
-    m.total_w = m.body_w + m.nub_w;
-    return m;
+    RingMetrics r;
+    r.dia = tm.tmHeight * 3 / 2;
+    if (r.dia < 17) r.dia = 17;
+    r.stroke = r.dia / 8;
+    if (r.stroke < 2) r.stroke = 2;
+    r.inner = r.dia - r.stroke * 2;
+    return r;
+}
+
+// 环内百分比排版：加粗数字，字号收窄到内孔装得下 "100"
+struct NumMetrics
+{
+    int num_h = 0;
+};
+
+inline NumMetrics NumSize(HDC hdc, const RingMetrics& rm)
+{
+    NumMetrics n;
+    int nh = rm.inner * 3 / 5;
+    if (nh < 8) nh = 8;
+    const int limit = rm.inner * 92 / 100;
+    for (;;)
+    {
+        HFONT nf = MakeFont(hdc, nh, FW_BOLD);
+        HGDIOBJ of = SelectObject(hdc, nf);
+        int w = TextW(hdc, L"100");
+        SelectObject(hdc, of);
+        DeleteObject(nf);
+        if (w <= limit || nh <= 8)
+        {
+            n.num_h = nh;
+            break;
+        }
+        --nh;
+    }
+    return n;
+}
+
+struct BoltMetrics
+{
+    int w = 0;
+    int h = 0;
+};
+
+// 充电闪电：嵌在圆环内孔中央（充电时替代百分比数字）
+inline BoltMetrics BoltSize(const RingMetrics& rm)
+{
+    BoltMetrics b;
+    b.h = rm.inner * 3 / 4;
+    if (b.h < 6) b.h = 6;
+    b.w = b.h * 7 / 10;
+    if (b.w < 4) b.w = 4;
+    return b;
 }
 
 inline COLORREF LevelColor(int percent, bool dark)
@@ -90,50 +134,32 @@ inline COLORREF LevelColor(int percent, bool dark)
     return                     dark ? RGB(255, 116, 122) : RGB(214, 55, 66);
 }
 
-// 电量填充底色：LevelColor 的淡色版，保证电池内数字（LevelColor）在填充上仍可读
-inline COLORREF TintColor(int percent, bool dark)
+// 圆环轨道色：比背景略亮的灰，不抢电量弧
+inline COLORREF TrackColor(bool dark)
 {
-    if (percent >= 60) return dark ? RGB(38, 84, 52)  : RGB(198, 239, 206);
-    if (percent >= 20) return dark ? RGB(96, 74, 22)  : RGB(248, 222, 160);
-    return                     dark ? RGB(92, 38, 44)  : RGB(250, 205, 210);
-}
-
-// 充电闪电颜色：跟随电量色（与数字同色）；无读数时金色兜底
-inline COLORREF BoltColor(int percent, bool dark)
-{
-    return percent >= 0 ? LevelColor(percent, dark)
-                        : (dark ? RGB(255, 213, 90) : RGB(232, 164, 0));
+    return dark ? RGB(82, 82, 88) : RGB(206, 206, 212);
 }
 
 struct SegMetrics
 {
-    BatMetrics bat;
-    int name_w = 0;   // 名称宽
-    int colon_w = 0;  // 名称后冒号宽
-    int value_w = 0;  // "未连接"文字宽（仅未连接段使用）
-    int total = 0;    // 段总宽
+    RingMetrics ring;
+    NumMetrics num;
+    int gap_colon = 1;  // 中文冒号自带右侧留白，后面只补很小间距
+    int name_w = 0;     // 名称宽
+    int colon_w = 0;    // 名称后冒号宽
+    int total = 0;     // 段总宽
 };
 
 inline SegMetrics MeasureSeg(HDC hdc, const DeviceDisplay& d)
 {
     SegMetrics s;
-    s.bat = BatSize(hdc);
+    s.gap_colon = GapFor(hdc) / 3;
+    if (s.gap_colon < 1) s.gap_colon = 1;
     s.name_w = TextW(hdc, d.name);
-    s.colon_w = TextW(hdc, L":");
-    if (d.absent)
-    {
-        // 未连接：只有 名称: + "未连接" 文字，无电池图形
-        s.value_w = TextW(hdc, L"未连接");
-        s.total = s.name_w + s.colon_w + kGap + s.value_w;
-        return s;
-    }
-    if (d.charging)
-    {
-        // 充电：闪电嵌在电池内，壳宽随之加宽
-        s.bat.body_w += s.bat.bolt_w + kBoltPad;
-        s.bat.total_w = s.bat.body_w + s.bat.nub_w;
-    }
-    s.total = s.name_w + s.colon_w + kGap + s.bat.total_w;
+    s.colon_w = TextW(hdc, L"：");
+    s.ring = RingSize(hdc);
+    s.num = NumSize(hdc, s.ring);
+    s.total = s.name_w + s.colon_w + s.gap_colon + s.ring.dia;
     return s;
 }
 
@@ -175,66 +201,114 @@ inline void DrawBolt(HDC dc, int x, int y, int w, int h, COLORREF col)
     DeleteObject(br);
 }
 
-// 电池图形：圆角外壳 + 右侧电极 + 按电量比例淡色填充 + 电池内 电量数字 [⚡]（无百分号）
-inline void DrawBattery(HDC dc, int left, int cy, const BatMetrics& bm,
-                        const DeviceDisplay& d, bool dark)
+// GDI+ 启动（首次绘制时初始化；插件进程内长期有效，无需 Shutdown）
+inline ULONG_PTR GdiplusToken()
 {
-    int top = cy - bm.body_h / 2;
-    int bottom = top + bm.body_h;
-    COLORREF frame = dark ? RGB(150, 150, 155) : RGB(125, 125, 130);
+    static ULONG_PTR token = 0;
+    static bool ok = [] {
+        Gdiplus::GdiplusStartupInput input;
+        return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
+    }();
+    return ok ? token : 0;
+}
 
-    // 电极（右侧凸头）
-    HBRUSH nbr = CreateSolidBrush(frame);
-    RECT nub{ left + bm.body_w, cy - bm.body_h / 4, left + bm.body_w + bm.nub_w, cy + bm.body_h / 4 + 1 };
-    FillRect(dc, &nub, nbr);
-    DeleteObject(nbr);
+inline Gdiplus::Color GpColor(COLORREF c)
+{
+    return Gdiplus::Color(255, GetRValue(c), GetGValue(c), GetBValue(c));
+}
 
-    // 外壳（1px 圆角描边）
-    HPEN pen = CreatePen(PS_SOLID, 1, frame);
-    HGDIOBJ op = SelectObject(dc, pen);
-    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    RoundRect(dc, left, top, left + bm.body_w + 1, bottom + 1, 2, 2);
-    SelectObject(dc, ob);
+// 圆环用 GDI+ 抗锯齿绘制：连续曲率、圆头端点，无锯齿
+inline void DrawRingGdiplus(HDC dc, int cx, int cy, const RingMetrics& rm, int percent, bool dark)
+{
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-    if (d.percent >= 0)
+    const Gdiplus::REAL r = (rm.dia - rm.stroke) / 2.0f;
+    const Gdiplus::REAL x = (Gdiplus::REAL)cx - r;
+    const Gdiplus::REAL y = (Gdiplus::REAL)cy - r;
+    const Gdiplus::REAL d = r * 2.0f;
+
+    Gdiplus::Pen track(GpColor(TrackColor(dark)), (Gdiplus::REAL)rm.stroke);
+    g.DrawEllipse(&track, x, y, d, d);
+
+    if (percent > 0)
     {
-        // 电量填充（内缩 2px，最低 2px 保证低电量可见；淡色，不压数字）
-        int fill_w = (bm.body_w - 3) * d.percent / 100;
-        if (fill_w < 2) fill_w = 2;
-        HBRUSH fb = CreateSolidBrush(TintColor(d.percent, dark));
-        RECT rc{ left + 2, top + 2, left + 2 + fill_w, bottom - 1 };
-        FillRect(dc, &rc, fb);
-        DeleteObject(fb);
+        Gdiplus::Pen arc(GpColor(LevelColor(percent, dark)), (Gdiplus::REAL)rm.stroke);
+        arc.SetStartCap(Gdiplus::LineCapRound);
+        arc.SetEndCap(Gdiplus::LineCapRound);
+        if (percent >= 100)
+            g.DrawEllipse(&arc, x, y, d, d);
+        else
+            g.DrawArc(&arc, x, y, d, d, -90.0f, 3.6f * percent); // -90°=12 点，顺时针
+    }
+}
+
+// 电量圆环：淡灰轨道 + 按比例顺时针描弧（从 12 点方向起）
+// 优先 GDI+ 抗锯齿；极端情况下 GDI+ 启动失败时退回折线描边
+inline void DrawRing(HDC dc, int cx, int cy, const RingMetrics& rm, int percent, bool dark)
+{
+    if (GdiplusToken())
+    {
+        DrawRingGdiplus(dc, cx, cy, rm, percent, dark);
+        return;
     }
 
+    int r = (rm.dia - rm.stroke) / 2;
+    if (r < 3) r = 3;
+    LOGBRUSH lb{ BS_SOLID, TrackColor(dark), 0 };
+    HPEN track = ExtCreatePen(PS_GEOMETRIC | PS_SOLID, rm.stroke, &lb, 0, nullptr);
+    HGDIOBJ op = SelectObject(dc, track);
+    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
     SelectObject(dc, op);
-    DeleteObject(pen);
+    DeleteObject(track);
+    if (percent > 0)
+    {
+        LOGBRUSH ab{ BS_SOLID, LevelColor(percent, dark), 0 };
+        HPEN arc = ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND, rm.stroke, &ab, 0, nullptr);
+        op = SelectObject(dc, arc);
+        if (percent >= 100)
+            Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+        else
+        {
+            POINT pts[65];
+            int steps = 64 * percent / 100;
+            if (steps < 4) steps = 4;
+            for (int i = 0; i <= steps; ++i)
+            {
+                double a = 3.6 * percent * i / steps * 3.14159265358979 / 180.0;
+                pts[i].x = cx + (int)lround(r * std::sin(a));
+                pts[i].y = cy - (int)lround(r * std::cos(a));
+            }
+            Polyline(dc, pts, steps + 1);
+        }
+        SelectObject(dc, op);
+        DeleteObject(arc);
+    }
+    SelectObject(dc, ob);
+}
 
-    SetBkMode(dc, TRANSPARENT);
-
-    // 电量数字 + ⚡ 作为一组整体居中（无读数显示 --）
+// 百分比画在圆环内孔中央（不显示 %）：数值等宽居中，读数变化不抖动
+inline void DrawPercent(HDC dc, int ring_cx, int y, int h, const RingMetrics& rm,
+                        const NumMetrics& nm, int percent, bool dark)
+{
     wchar_t buf[8];
     const wchar_t* s = L"--";
-    if (d.percent >= 0)
+    if (percent >= 0)
     {
-        swprintf_s(buf, L"%d", d.percent);
+        swprintf_s(buf, L"%d", percent);
         s = buf;
     }
-    SetTextColor(dc, d.percent >= 0 ? LevelColor(d.percent, dark) : MutedColor(dark));
-    HFONT df = MakeDigitFont(dc, bm.body_h - 4);
-    HGDIOBJ of = SelectObject(dc, df);
-    int text_w = TextW(dc, s);
-    int group_w = text_w;
-    if (d.charging) group_w += kBoltPad + bm.bolt_w;
-    int group_left = left + (bm.body_w - group_w) / 2;
-    RECT rcText{ group_left, top, group_left + text_w, bottom };
-    DrawTextW(dc, s, -1, &rcText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    SelectObject(dc, of);
-    DeleteObject(df);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, percent >= 0 ? LevelColor(percent, dark) : MutedColor(dark));
 
-    if (d.charging)
-        DrawBolt(dc, group_left + text_w + kBoltPad, cy - bm.bolt_h / 2,
-                 bm.bolt_w, bm.bolt_h, BoltColor(d.percent, dark));
+    HFONT nf = MakeFont(dc, nm.num_h, FW_BOLD);
+    HGDIOBJ of = SelectObject(dc, nf);
+    RECT rd{ ring_cx - rm.dia / 2, y, ring_cx + (rm.dia + 1) / 2, y + h };
+    DrawTextW(dc, s, -1, &rd, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, of);
+    DeleteObject(nf);
 }
 
 // 绘制整个显示项：竖排居中，段间细分隔线
@@ -254,12 +328,7 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
         return;
     }
 
-    TEXTMETRIC tm{};
-    GetTextMetrics(dc, &tm);
-    // 文字用 DT_VCENTER 与 TrafficMonitor 自带条目同一绘制路径，保证基线一致；
-    // 电池/闪电以文字行中心对齐（不绑定条目矩形中心，避免混合基准错位）
-    int text_top = y + (h - tm.tmHeight) / 2;
-    int cy = text_top + tm.tmHeight / 2;
+    int cy = y + h / 2; // 图标 / 圆环 / 数字的垂直中心
 
     int cx = x + kPadLR;
     for (int i = 0; i < n; ++i)
@@ -278,33 +347,32 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
             cx += kSepW;
         }
 
-        if (d.absent)
-        {
-            // 未连接：整段弱化灰，只显示 名称: 未连接
-            SetTextColor(dc, muted_col);
-            RECT rcName{ cx, y, cx + m.name_w, y + h };
-            DrawTextW(dc, d.name, -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            RECT rcColon{ cx + m.name_w, y, cx + m.name_w + m.colon_w, y + h };
-            DrawTextW(dc, L":", 1, &rcColon, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            RECT rcVal{ cx + m.name_w + m.colon_w + kGap, y, cx + m.name_w + m.colon_w + kGap + m.value_w, y + h };
-            DrawTextW(dc, L"未连接", 3, &rcVal, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            cx += m.total;
-            continue;
-        }
-
-        // 名称: （与数值同色，跟任务栏文字保持一致）
+        // 名称: （与任务栏文字同色）
         SetTextColor(dc, text_col);
         {
-            RECT rcName{ cx, y, cx + m.name_w, y + h };
+            RECT rcName{ cx, y, cx + m.name_w + 2, y + h };
             DrawTextW(dc, d.name, -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            RECT rcColon{ cx + m.name_w, y, cx + m.name_w + m.colon_w, y + h };
-            DrawTextW(dc, L":", 1, &rcColon, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            int colon_x = cx + m.name_w;
+            RECT rcColon{ colon_x, y, colon_x + m.colon_w + 2, y + h };
+            DrawTextW(dc, L"：", 1, &rcColon, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
-        cx += m.name_w + m.colon_w + kGap;
+        int value_x = cx + m.name_w + m.colon_w + m.gap_colon;
 
-        // 电池图形（⚡ 与电量数字画在电池内，无百分号）
-        DrawBattery(dc, cx, cy, m.bat, d, dark);
-        cx += m.bat.total_w;
+        // 电量圆环：充电时环内画 ⚡ 替代数字，否则画百分比
+        int ring_cx = value_x + m.ring.dia / 2;
+        DrawRing(dc, ring_cx, cy, m.ring, d.percent, dark);
+        if (d.charging && d.percent >= 0)
+        {
+            BoltMetrics b = BoltSize(m.ring);
+            DrawBolt(dc, ring_cx - b.w / 2, cy - b.h / 2, b.w, b.h,
+                     LevelColor(d.percent, dark));
+        }
+        else
+        {
+            DrawPercent(dc, ring_cx, y, h, m.ring, m.num, d.percent, dark);
+        }
+
+        cx += m.total;
     }
 }
 

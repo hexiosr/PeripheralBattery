@@ -93,7 +93,7 @@ link /nologo /DLL /OUT:PeripheralBattery.dll /SUBSYSTEM:WINDOWS ^
     DualSenseDevice.obj DualSenseReader.obj ^
     G7Device.obj G7Reader.obj ^
     PeripheralItem.obj Plugin.obj dllmain.obj ^
-    kernel32.lib user32.lib gdi32.lib setupapi.lib hid.lib ucrt.lib uuid.lib
+    kernel32.lib user32.lib gdi32.lib gdiplus.lib setupapi.lib hid.lib ucrt.lib uuid.lib
 if errorlevel 1 exit /b 1
 
 echo.
