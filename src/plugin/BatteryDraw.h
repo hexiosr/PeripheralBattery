@@ -5,8 +5,8 @@
 //  - 圆环用 GDI+ 抗锯齿绘制（连续曲率，无锯齿），按比例顺时针描弧
 //  - 配色：≥60% 绿 / 20~59% 黄 / <20% 红（淡灰轨道）
 //  - 百分比加粗画在圆环内孔中央（不显示 %）；充电时环内改画 ⚡
-//  - 无读数 / 未连接 → 空圆环 + --（所有设备一致）
-//  - 圆环直径固定，读数 / 充电切换不引起任务栏宽度抖动
+//  - 无读数 / 未连接 → 不画圆环，只显示 --（所有设备一致）
+//  - 有读数时圆环直径固定，读数 / 充电切换不引起宽度抖动；未连接时数值区收窄为 --
 // ============================================================
 #include <windows.h>
 #include <gdiplus.h>
@@ -153,6 +153,7 @@ struct SegMetrics
     int gap_colon = 1;  // 中文冒号自带右侧留白，后面只补很小间距
     int name_w = 0;     // 名称宽
     int colon_w = 0;    // 名称后冒号宽
+    int value_w = 0;    // 数值区宽：有读数时 = 圆环直径，未连接时 = -- 文本宽
     int total = 0;      // 段总宽
 };
 
@@ -165,7 +166,8 @@ inline SegMetrics MeasureSeg(HDC hdc, const DeviceDisplay& d)
     s.colon_w = TextW(hdc, L"：");
     s.ring = RingSize(hdc);
     s.num = NumSize(hdc, s.ring);
-    s.total = s.name_w + s.colon_w + s.gap_colon + s.ring.dia;
+    s.value_w = d.percent >= 0 ? s.ring.dia : TextW(hdc, L"--") + 4;
+    s.total = s.name_w + s.colon_w + s.gap_colon + s.value_w;
     return s;
 }
 
@@ -295,8 +297,8 @@ inline void DrawRing(HDC dc, int cx, int cy, const RingMetrics& rm, int percent,
     SelectObject(dc, ob);
 }
 
-// 百分比画在圆环内孔中央（不显示 %）：数值等宽居中，读数变化不抖动
-inline void DrawPercent(HDC dc, int ring_cx, int y, int h, const RingMetrics& rm,
+// 百分比画在数值区中央（不显示 %）：数值等宽居中，读数变化不抖动
+inline void DrawPercent(HDC dc, int x, int y, int h, int box_w,
                         const NumMetrics& nm, int percent, bool dark)
 {
     wchar_t buf[8];
@@ -311,7 +313,7 @@ inline void DrawPercent(HDC dc, int ring_cx, int y, int h, const RingMetrics& rm
 
     HFONT nf = MakeFont(dc, nm.num_h, FW_BOLD);
     HGDIOBJ of = SelectObject(dc, nf);
-    RECT rd{ ring_cx - rm.dia / 2, y, ring_cx + (rm.dia + 1) / 2, y + h };
+    RECT rd{ x, y, x + box_w, y + h };
     DrawTextW(dc, s, -1, &rd, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(dc, of);
     DeleteObject(nf);
@@ -355,8 +357,8 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
             cx += kSepW;
         }
 
-        // 名称: （与任务栏文字同色）
-        SetTextColor(dc, text_col);
+        // 名称: （未连接时与 -- 一起弱化）
+        SetTextColor(dc, d.percent >= 0 ? text_col : muted_col);
         {
             RECT rcName{ cx, y, cx + m.name_w + 2, y + h };
             DrawTextW(dc, d.name, -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -366,18 +368,25 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
         }
         int value_x = cx + m.name_w + m.colon_w + m.gap_colon;
 
-        // 电量圆环：充电时环内画 ⚡ 替代数字，否则画百分比
-        int ring_cx = value_x + m.ring.dia / 2;
-        DrawRing(dc, ring_cx, cy, m.ring, d.percent, dark);
-        if (d.charging && d.percent >= 0)
+        // 电量圆环：充电时环内画 ⚡ 替代数字，否则画百分比；未连接不画环、数值区收窄
+        if (d.percent >= 0)
         {
-            BoltMetrics b = BoltSize(m.ring);
-            DrawBolt(dc, ring_cx - b.w / 2, cy - b.h / 2, b.w, b.h,
-                     LevelColor(d.percent, dark));
+            const int ring_cx = value_x + m.ring.dia / 2;
+            DrawRing(dc, ring_cx, cy, m.ring, d.percent, dark);
+            if (d.charging)
+            {
+                BoltMetrics b = BoltSize(m.ring);
+                DrawBolt(dc, ring_cx - b.w / 2, cy - b.h / 2, b.w, b.h,
+                         LevelColor(d.percent, dark));
+            }
+            else
+            {
+                DrawPercent(dc, value_x, y, h, m.ring.dia, m.num, d.percent, dark);
+            }
         }
         else
         {
-            DrawPercent(dc, ring_cx, y, h, m.ring, m.num, d.percent, dark);
+            DrawPercent(dc, value_x, y, h, m.value_w, m.num, d.percent, dark);
         }
 
         cx += m.total;
