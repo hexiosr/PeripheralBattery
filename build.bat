@@ -70,7 +70,7 @@ if not exist "%ROOT%out" mkdir "%ROOT%out"
 cd /d "%ROOT%out"
 
 echo.
-echo == [1/2] Build plugin DLL ==
+echo == [1/3] Build plugin DLL ==
 cl /nologo /c /EHsc /utf-8 /DUNICODE /D_UNICODE /O2 /MD /W3 ^
     /I"%ROOT%src\common" /I"%ROOT%src\keyboard" /I"%ROOT%src\mouse" ^
     /I"%ROOT%src\dualsense" /I"%ROOT%src\g7" /I"%ROOT%src\plugin" ^
@@ -87,17 +87,22 @@ cl /nologo /c /EHsc /utf-8 /DUNICODE /D_UNICODE /O2 /MD /W3 ^
     "%ROOT%src\plugin\dllmain.cpp"
 if errorlevel 1 exit /b 1
 
+echo.
+echo == [2/3] Compile resources (plugin icon) ==
+rc /nologo /I "%ROOT%src\plugin" /fo "%ROOT%out\Plugin.res" "%ROOT%src\plugin\Plugin.rc"
+if errorlevel 1 exit /b 1
+
 link /nologo /DLL /OUT:PeripheralBattery.dll /SUBSYSTEM:WINDOWS ^
     KeyboardDevice.obj KeyboardReader.obj ^
     MouseDevice.obj MouseReader.obj ^
     DualSenseDevice.obj DualSenseReader.obj ^
     G7Device.obj G7Reader.obj ^
-    PeripheralItem.obj Plugin.obj dllmain.obj ^
+    PeripheralItem.obj Plugin.obj dllmain.obj Plugin.res ^
     kernel32.lib user32.lib gdi32.lib gdiplus.lib setupapi.lib hid.lib ucrt.lib uuid.lib
 if errorlevel 1 exit /b 1
 
 echo.
-echo == [2/2] Check exports ==
+echo == [3/3] Check exports ==
 dumpbin /exports PeripheralBattery.dll | findstr /C:"TMPluginGetInstance"
 if errorlevel 1 (
     echo [ERROR] Export TMPluginGetInstance not found

@@ -3,6 +3,8 @@
 #include <windowsx.h>
 #include <cstdio>
 
+extern HMODULE g_hDllModule; // dllmain.cpp：本 DLL 模块句柄
+
 // ============ 设备条目表 ============
 // 新增设备：1) 在下面表里加一行 2) 实现对应 Reader 并加入 Plugin 3) kDeviceCount +1
 // 选项对话框会自动按此表生成勾选项，无需改界面代码。
@@ -930,6 +932,16 @@ ITMPlugin::OptionReturn Plugin::ShowOptionsDialog(void* hParent)
     DeleteObject(hFont);
     DeleteObject(hListFont);
     return m_option_changed ? OR_OPTION_CHANGED : OR_OPTION_UNCHANGED;
+}
+
+void* Plugin::GetPluginIcon()
+{
+    // 任务栏插件管理列表按小图标尺寸显示；按当前 DPI 取对应尺寸避免缩放发虚
+    static HICON icon = (HICON)LoadImageW(g_hDllModule, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                         GetSystemMetrics(SM_CXSMICON),
+                                         GetSystemMetrics(SM_CYSMICON),
+                                         LR_DEFAULTCOLOR);
+    return icon;
 }
 
 ITMPlugin* TMPluginGetInstance()

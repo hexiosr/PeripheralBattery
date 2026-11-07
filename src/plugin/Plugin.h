@@ -33,6 +33,7 @@ public:
     virtual const wchar_t* GetTooltipInfo() override;
     virtual void OnInitialize(ITrafficMonitor* pApp) override;
     virtual OptionReturn ShowOptionsDialog(void* hParent) override;
+    virtual void* GetPluginIcon() override;
 
     // 供显示项使用（UI 线程缓存，由 DataRequired 更新）
     const std::wstring& CombinedValueText() const { return m_value_text; }

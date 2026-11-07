@@ -1,0 +1,2 @@
+// 插件图标资源（GetPluginIcon 从 DLL 内加载；资源管理器也显示为该图标）
+1 ICON "app.ico"
