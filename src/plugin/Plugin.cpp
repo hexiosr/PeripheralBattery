@@ -585,6 +585,10 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     Plugin* self = (Plugin*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     switch (msg)
     {
+    case WM_INITDIALOG:
+        // 创建参数即 Plugin 实例；本过程经 DefDlgProc 转发，未处理的消息返回 FALSE
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, lp);
+        return TRUE;
     case WM_ERASEBKGND:
         // 浅灰画布，列表作为白色卡片浮在上面
         {
@@ -611,7 +615,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             DeleteObject(SelectObject(hdc, op));
             SelectObject(hdc, ob);
             EndPaint(hwnd, &ps);
-            return 0;
+            return TRUE;
         }
     case WM_DRAWITEM:
         {
@@ -663,7 +667,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 RECT rcTxt = rc;
                 rcTxt.left += 44;
                 DrawTextW(hdc, kDevices[dev].desc, -1, &rcTxt, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                return 0;
+                return TRUE;
             }
 
             // ---- 按钮：圆角 4px，白底灰边；默认（确定）主题蓝底白字 ----
@@ -698,7 +702,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, txt);
                 DrawTextW(hdc, caption, n, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                return 0;
+                return TRUE;
             }
         }
     case WM_COMMAND:
@@ -717,7 +721,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     SelectDev(hList, dev);
                     SetFocus(hList);
                 }
-                return 0;
+                return TRUE;
             }
             if (id == IDC_RESET)
             {
@@ -725,7 +729,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     self->DlgRestoreDefault();
                 RebuildList(hList);
                 SetFocus(hList);
-                return 0;
+                return TRUE;
             }
             switch (id)
             {
@@ -736,7 +740,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     self->DlgApply();
                     self->SetOptionChanged(true);
                 }
-                return 0;
+                return TRUE;
             case IDC_OK:
                 if (self)
                 {
@@ -753,7 +757,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     }
                 }
                 DestroyWindow(hwnd);
-                return 0;
+                return TRUE;
             case IDC_CANCEL:
                 {
                     HWND p = GetParent(hwnd);
@@ -765,7 +769,7 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     }
                 }
                 DestroyWindow(hwnd);
-                return 0;
+                return TRUE;
             }
         }
         break;
@@ -780,9 +784,9 @@ LRESULT CALLBACK OptionDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
         DestroyWindow(hwnd);
-        return 0;
+        return TRUE;
     }
-    return DefWindowProcW(hwnd, msg, wp, lp);
+    return FALSE;
 }
 
 } // namespace
@@ -797,15 +801,23 @@ ITMPlugin::OptionReturn Plugin::ShowOptionsDialog(void* hParent)
     AdjustWindowRectEx(&wnd, WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME, FALSE, 0);
     const int W = wnd.right - wnd.left, H = wnd.bottom - wnd.top;
 
-    // 创建系统对话框窗口（#32770），再替换窗口过程接管消息
-    HWND hDlg = CreateWindowExW(0, L"#32770", L"显示设置",
-                                WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-                                CW_USEDEFAULT, CW_USEDEFAULT, W, H,
-                                parent, nullptr, hInst, nullptr);
+    // 用内存中的空对话框模板建窗（无控件、无图标）：模板对话框不会回退到系统默认图标，
+    // 与其他插件的选项页一致；控件仍按像素坐标手工创建。
+    struct
+    {
+        DLGTEMPLATE tpl{};
+        WORD menu = 0;
+        WORD cls = 0;
+        wchar_t title[16]{};
+    } tmpl;
+    tmpl.tpl.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME;
+    tmpl.tpl.cx = (short)kDlgW;
+    tmpl.tpl.cy = (short)kDlgH;
+    lstrcpynW(tmpl.title, L"显示设置", 16);
+
+    HWND hDlg = CreateDialogIndirectParamW(hInst, &tmpl.tpl, parent, OptionDlgProc, (LPARAM)this);
     if (!hDlg)
         return OR_OPTION_UNCHANGED;
-    SetWindowLongPtrW(hDlg, GWLP_WNDPROC, (LONG_PTR)OptionDlgProc);
-    SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)this);
 
     // Win11 圆角窗口（DWMWA_WINDOW_CORNER_PREFERENCE=33 / DWMWCP_ROUND=2，旧系统失败自动忽略）
     if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll"))
@@ -882,7 +894,8 @@ ITMPlugin::OptionReturn Plugin::ShowOptionsDialog(void* hParent)
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
     int x = wa.left + ((wa.right - wa.left) - W) / 2;
     int y = wa.top + ((wa.bottom - wa.top) - H) / 2;
-    SetWindowPos(hDlg, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    // 模板尺寸以对话框单位计，这里按像素设定精确窗口尺寸后显示
+    SetWindowPos(hDlg, nullptr, x, y, W, H, SWP_NOZORDER | SWP_SHOWWINDOW);
     UpdateWindow(hDlg);
 
     // 模态消息循环：取本线程所有消息（子控件消息也在此队列），
