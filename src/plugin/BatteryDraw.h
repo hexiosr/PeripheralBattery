@@ -127,7 +127,7 @@ inline int ItemHeightFromDC(HDC hdc)
 struct NumMetrics
 {
     int num_h = 0;
-    int w = 0;   // "100" 在当前字号下的宽度：数值区按它固定宽，读数变化不抖动
+    int w = 0;   // "100%" 在当前字号下的宽度：双行排列数值区按它固定宽，读数变化不抖动
 };
 
 inline NumMetrics NumSize(HDC hdc, const RingMetrics& rm)
@@ -141,12 +141,13 @@ inline NumMetrics NumSize(HDC hdc, const RingMetrics& rm)
         HFONT nf = MakeFont(hdc, nh, FW_BOLD);
         HGDIOBJ of = SelectObject(hdc, nf);
         int w = TextW(hdc, L"100");
+        int wp = TextW(hdc, L"100%");
         SelectObject(hdc, of);
         DeleteObject(nf);
         if (w <= limit || nh <= 8)
         {
             n.num_h = nh;
-            n.w = w;
+            n.w = wp;
             break;
         }
         --nh;
@@ -348,15 +349,18 @@ inline void DrawRing(HDC dc, int cx, int cy, const RingMetrics& rm, int percent,
     SelectObject(dc, ob);
 }
 
-// 百分比画在数值区中央（不显示 %）：数值等宽居中，读数变化不抖动
+// 百分比画在数值区中央（环内不显示 %；环外有空间，带 % 更直观）
 inline void DrawPercent(HDC dc, int x, int y, int h, int box_w,
-                        const NumMetrics& nm, int percent, bool dark)
+                        const NumMetrics& nm, int percent, bool dark, bool with_percent = false)
 {
     wchar_t buf[8];
     const wchar_t* s = L"--";
     if (percent >= 0)
     {
-        swprintf_s(buf, L"%d", percent);
+        if (with_percent)
+            swprintf_s(buf, L"%d%%", percent);
+        else
+            swprintf_s(buf, L"%d", percent);
         s = buf;
     }
     SetBkMode(dc, TRANSPARENT);
@@ -432,10 +436,10 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
             }
             else
             {
-                // 双行排列时环内太窄，数字画在环右侧；否则居中画在环内
+                // 双行排列时环内太窄，数字带 % 画在环右侧；否则居中画在环内
                 const int num_x = m.compact ? value_x + m.ring.dia + kNumGap : value_x;
                 DrawPercent(dc, num_x, y, h, m.compact ? m.num.w : m.ring.dia,
-                            m.num, d.percent, dark);
+                            m.num, d.percent, dark, m.compact);
             }
         }
         else
