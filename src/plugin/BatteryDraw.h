@@ -7,6 +7,7 @@
 //  - 百分比加粗画在圆环内孔中央（不显示 %）；充电时环内改画 ⚡
 //  - 无读数 / 未连接 → 不画圆环，只显示 --（所有设备一致）
 //  - 有读数时圆环直径固定，读数 / 充电切换不引起宽度抖动；未连接时数值区收窄为 --
+//  - 任务栏双行排列时条目只有约字高那么高：圆环收缩，百分比改画在环右侧
 // ============================================================
 #include <windows.h>
 #include <gdiplus.h>
@@ -26,6 +27,7 @@ namespace batdraw {
 
 constexpr int kPadLR = 1;      // 左右内边距（TrafficMonitor 自带条目文字从槽位左缘起始，内边距越大插件条目越显右移）
 constexpr int kSepW = 14;      // 设备分隔宽度（短分隔线 + 两侧留白）
+constexpr int kNumGap = 2;     // 双行排列时圆环与右侧百分比之间的间隙
 
 // 段内间距：随字号缩放（高 DPI 下不显得拥挤）
 inline int GapFor(HDC hdc)
@@ -87,10 +89,45 @@ inline RingMetrics RingSize(HDC hdc)
     return r;
 }
 
+// 行高不足时收缩圆环（双行排列的行高小于 1.5 倍字高，原尺寸会溢出到相邻行）
+inline RingMetrics FitRing(const RingMetrics& rm, int avail_h)
+{
+    if (avail_h <= 0)
+        return rm;
+    const int cap = avail_h - 2; // 上下各留 1px，描边不贴边
+    if (cap >= rm.dia || cap < 10)
+        return rm;
+    RingMetrics f;
+    f.dia = cap;
+    f.stroke = cap / 8;
+    if (f.stroke < 2) f.stroke = 2;
+    f.inner = cap - f.stroke * 2;
+    return f;
+}
+
+// 宽度计算阶段拿不到条目矩形，只能从任务栏窗口高度推算：
+// 双行排列的窗口约两倍行高，行高约为字高（0.75~1.25 倍）；单行排列只有约 0.66 倍
+inline int ItemHeightFromDC(HDC hdc)
+{
+    HWND wnd = WindowFromDC(hdc);
+    if (!wnd)
+        return 0;
+    RECT rc{};
+    if (!GetClientRect(wnd, &rc))
+        return 0;
+    TEXTMETRIC tm{};
+    GetTextMetrics(hdc, &tm);
+    const int row = (rc.bottom - rc.top) / 2;
+    if (row * 4 >= tm.tmHeight * 3 && row * 4 <= tm.tmHeight * 5)
+        return row;
+    return 0;
+}
+
 // 环内百分比排版：加粗数字，字号收窄到内孔装得下 "100"
 struct NumMetrics
 {
     int num_h = 0;
+    int w = 0;   // "100" 在当前字号下的宽度：数值区按它固定宽，读数变化不抖动
 };
 
 inline NumMetrics NumSize(HDC hdc, const RingMetrics& rm)
@@ -109,6 +146,7 @@ inline NumMetrics NumSize(HDC hdc, const RingMetrics& rm)
         if (w <= limit || nh <= 8)
         {
             n.num_h = nh;
+            n.w = w;
             break;
         }
         --nh;
@@ -150,14 +188,15 @@ struct SegMetrics
 {
     RingMetrics ring;
     NumMetrics num;
+    bool compact = false; // 行高不足：环收缩，数字画在环右侧
     int gap_colon = 1;  // 中文冒号自带右侧留白，后面只补很小间距
     int name_w = 0;     // 名称宽
     int colon_w = 0;    // 名称后冒号宽
-    int value_w = 0;    // 数值区宽：有读数时 = 圆环直径，未连接时 = -- 文本宽
+    int value_w = 0;    // 数值区宽：有读数时 = 圆环（+数字），未连接时 = -- 文本宽
     int total = 0;      // 段总宽
 };
 
-inline SegMetrics MeasureSeg(HDC hdc, const DeviceDisplay& d)
+inline SegMetrics MeasureSeg(HDC hdc, const DeviceDisplay& d, int avail_h = 0)
 {
     SegMetrics s;
     s.gap_colon = GapFor(hdc) / 3;
@@ -166,7 +205,18 @@ inline SegMetrics MeasureSeg(HDC hdc, const DeviceDisplay& d)
     s.colon_w = TextW(hdc, L"：");
     s.ring = RingSize(hdc);
     s.num = NumSize(hdc, s.ring);
-    s.value_w = d.percent >= 0 ? s.ring.dia : TextW(hdc, L"--") + 4;
+    TEXTMETRIC tm{};
+    GetTextMetrics(hdc, &tm);
+    // 双行排列：条目只有约字高那么高，比圆环小一大截，环内装不下数字
+    if (avail_h > 0 && avail_h <= tm.tmHeight)
+    {
+        s.compact = true;
+        s.ring = FitRing(s.ring, avail_h);
+        if (d.percent >= 0)
+            s.value_w = s.ring.dia + kNumGap + s.num.w;
+    }
+    if (s.value_w == 0)
+        s.value_w = d.percent >= 0 ? s.ring.dia : TextW(hdc, L"--") + 4;
     s.total = s.name_w + s.colon_w + s.gap_colon + s.value_w;
     return s;
 }
@@ -176,11 +226,12 @@ inline int LayoutWidth(HDC hdc, const DeviceDisplay* list, int n)
 {
     if (n <= 0)
         return TextW(hdc, L"已全部关闭") + kPadLR * 2 + 2;
+    const int avail_h = ItemHeightFromDC(hdc);
     int w = kPadLR * 2;
     for (int i = 0; i < n; ++i)
     {
         if (i) w += kSepW;
-        w += MeasureSeg(hdc, list[i]).total;
+        w += MeasureSeg(hdc, list[i], avail_h).total;
     }
     return w;
 }
@@ -342,7 +393,7 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
     for (int i = 0; i < n; ++i)
     {
         const DeviceDisplay& d = list[i];
-        SegMetrics m = MeasureSeg(dc, d);
+        SegMetrics m = MeasureSeg(dc, d, h);
 
         if (i > 0)
         {
@@ -381,7 +432,10 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
             }
             else
             {
-                DrawPercent(dc, value_x, y, h, m.ring.dia, m.num, d.percent, dark);
+                // 双行排列时环内太窄，数字画在环右侧；否则居中画在环内
+                const int num_x = m.compact ? value_x + m.ring.dia + kNumGap : value_x;
+                DrawPercent(dc, num_x, y, h, m.compact ? m.num.w : m.ring.dia,
+                            m.num, d.percent, dark);
             }
         }
         else
