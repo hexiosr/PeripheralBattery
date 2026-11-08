@@ -7,7 +7,8 @@
 //  - 百分比加粗画在圆环内孔中央（不显示 %）；充电时环内改画 ⚡
 //  - 无读数 / 未连接 → 不画圆环，只显示 --（所有设备一致）
 //  - 有读数时圆环直径固定，读数 / 充电切换不引起宽度抖动；未连接时数值区收窄为 --
-//  - 任务栏双行排列时条目只有约字高那么高：圆环收缩，百分比改画在环右侧
+//  - 任务栏双行排列时条目只有约字高那么高：圆环收缩，百分比改画在环右侧；
+//    充电时环不变，右侧的百分比换成 ⚡
 // ============================================================
 #include <windows.h>
 #include <gdiplus.h>
@@ -277,6 +278,31 @@ inline Gdiplus::Color GpColor(COLORREF c)
     return Gdiplus::Color(255, GetRValue(c), GetGValue(c), GetBValue(c));
 }
 
+// 闪电用 GDI+ 抗锯齿填充（双行排列的闪电只有十几像素，硬边多边形会糊成一团）
+inline void DrawBoltAa(HDC dc, int x, int y, int w, int h, COLORREF col)
+{
+    static const double pts[][2] = {
+        { 0.60, 0.00 }, { 0.10, 0.60 }, { 0.44, 0.60 }, { 0.34, 1.00 },
+        { 0.90, 0.38 }, { 0.54, 0.38 }, { 0.78, 0.00 },
+    };
+    if (!GdiplusToken())
+    {
+        DrawBolt(dc, x, y, w, h, col);
+        return;
+    }
+    Gdiplus::PointF p[7];
+    for (int i = 0; i < 7; ++i)
+    {
+        p[i].X = (Gdiplus::REAL)(x + pts[i][0] * (w - 1));
+        p[i].Y = (Gdiplus::REAL)(y + pts[i][1] * (h - 1));
+    }
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    Gdiplus::SolidBrush br(GpColor(col));
+    g.FillPolygon(&br, p, 7);
+}
+
 // 圆环用 GDI+ 抗锯齿绘制：连续曲率、圆头端点，无锯齿
 inline void DrawRingGdiplus(HDC dc, int cx, int cy, const RingMetrics& rm, int percent, bool dark)
 {
@@ -423,23 +449,39 @@ inline void DrawSegments(HDC dc, int x, int y, int w, int h, bool dark,
         }
         int value_x = cx + m.name_w + m.colon_w + m.gap_colon;
 
-        // 电量圆环：充电时环内画 ⚡ 替代数字，否则画百分比；未连接不画环、数值区收窄
+        // 电量圆环：充电时画 ⚡，否则画百分比；未连接不画环、数值区收窄
         if (d.percent >= 0)
         {
             const int ring_cx = value_x + m.ring.dia / 2;
-            DrawRing(dc, ring_cx, cy, m.ring, d.percent, dark);
-            if (d.charging)
+            const COLORREF level = LevelColor(d.percent, dark);
+            if (m.compact)
             {
-                BoltMetrics b = BoltSize(m.ring);
-                DrawBolt(dc, ring_cx - b.w / 2, cy - b.h / 2, b.w, b.h,
-                         LevelColor(d.percent, dark));
+                // 双行排列：环照画，充电时环右侧的百分比换成 ⚡
+                DrawRing(dc, ring_cx, cy, m.ring, d.percent, dark);
+                const int num_x = value_x + m.ring.dia + kNumGap;
+                if (d.charging)
+                {
+                    const int bh = h - 2;
+                    const int bw = bh * 4 / 5;
+                    DrawBoltAa(dc, num_x + (m.num.w - bw) / 2, cy - bh / 2, bw, bh, level);
+                }
+                else
+                {
+                    DrawPercent(dc, num_x, y, h, m.num.w, m.num, d.percent, dark, true);
+                }
             }
             else
             {
-                // 双行排列时环内太窄，数字带 % 画在环右侧；否则居中画在环内
-                const int num_x = m.compact ? value_x + m.ring.dia + kNumGap : value_x;
-                DrawPercent(dc, num_x, y, h, m.compact ? m.num.w : m.ring.dia,
-                            m.num, d.percent, dark, m.compact);
+                DrawRing(dc, ring_cx, cy, m.ring, d.percent, dark);
+                if (d.charging)
+                {
+                    BoltMetrics b = BoltSize(m.ring);
+                    DrawBolt(dc, ring_cx - b.w / 2, cy - b.h / 2, b.w, b.h, level);
+                }
+                else
+                {
+                    DrawPercent(dc, value_x, y, h, m.ring.dia, m.num, d.percent, dark);
+                }
             }
         }
         else
