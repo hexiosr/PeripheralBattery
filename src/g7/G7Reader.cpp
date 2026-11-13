@@ -1,4 +1,5 @@
 #include "G7Reader.h"
+#include "PluginConfig.h"
 #include <windows.h>
 #include <cstring>
 
@@ -64,20 +65,18 @@ void G7Reader::WorkerLoop()
     BYTE dev_id[8] = { 0 };          // 当前关注的接收器设备 ID（首个 Status 消息学习）
     ULONGLONG last_msg_ms = 0;       // 最近一次收到该设备消息的时间
 
-    constexpr DWORD kReconnectDelay = 3000;     // 打不开 GIP 总线的重试间隔
-    constexpr DWORD kReadTimeoutMs = 1000;      // 单次读超时：消息到达会立即唤醒等待，超时只决定空闲巡检节奏；1s 也让 Stop() 的 join 不被长阻塞拖住
-    constexpr ULONGLONG kIdleResetMs = 60000;   // 60s 无消息 → 认为接收器被换插，重置设备 ID 重新学习
-    constexpr ULONGLONG kNoMsgOfflineMs = 90000;// 90s 无消息 → 视为手柄断开（正常连接约 20s 一条 Status）
-
     while (!m_stop)
     {
+        // 每轮取一次配置快照：玩家在选项里改完间隔后，最迟一个等待周期生效
+        const RefreshConfig cfg = PluginConfig::Instance().Refresh();
+
         if (!device.IsOpen())
         {
             bool ok = device.Open();
             if (!ok)
             {
                 // GIP 总线打不开（驱动未就绪/系统无 GIP 设备）→ 保持最后读数，延迟重试
-                SleepInterruptible(m_stop, kReconnectDelay);
+                SleepInterruptible(m_stop, (DWORD)cfg.g7_reconnect_ms);
                 continue;
             }
             {
@@ -94,13 +93,13 @@ void G7Reader::WorkerLoop()
         int len = 0;
         ULONGLONG now = GetTickCount64();
 
-        if (!device.ReadMessage(buf, len, kReadTimeoutMs))
+        if (!device.ReadMessage(buf, len, (DWORD)cfg.g7_read_timeout_ms))
         {
             // 超时无消息
-            if (last_msg_ms != 0 && now - last_msg_ms >= kIdleResetMs)
+            if (last_msg_ms != 0 && now - last_msg_ms >= (ULONGLONG)cfg.g7_reset_ms)
                 memset(dev_id, 0, sizeof(dev_id)); // 接收器可能被换插，重新学习设备 ID
             // 兜底：长时间无消息 → 视为手柄断开，显示 --（防止漏掉断开标志消息）
-            if (last_msg_ms != 0 && now - last_msg_ms >= kNoMsgOfflineMs)
+            if (last_msg_ms != 0 && now - last_msg_ms >= (ULONGLONG)cfg.g7_offline_ms)
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 m_snapshot.valid = false;

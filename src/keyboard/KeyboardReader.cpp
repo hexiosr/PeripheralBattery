@@ -1,4 +1,5 @@
 #include "KeyboardReader.h"
+#include "PluginConfig.h"
 #include <windows.h>
 
 KeyboardReader::~KeyboardReader()
@@ -57,17 +58,14 @@ static bool AnyKeyPressed()
 void KeyboardReader::WorkerLoop()
 {
     KeyboardDevice device;
-    constexpr DWORD kReconnectDelay = 3000;          // 打开设备失败的重试间隔
-    constexpr ULONGLONG kQueryCooldownMs = 2000;     // 查询防抖
-    constexpr ULONGLONG kActivityRefreshMs = 5000;   // 使用中每 5 秒刷新一次
-    constexpr ULONGLONG kActiveWindowMs = 30000;     // 30 秒内有按键才视为"使用中"
-    constexpr ULONGLONG kIdleWakeMs = 60000;         // 闲置满 60 秒后的首次按键 = 键盘唤醒
 
     ULONGLONG last_query_ms = 0;
     ULONGLONG last_key_activity_ms = 0; // 最近一次检测到按键的时刻
 
     while (!m_stop)
     {
+        // 每轮取一次配置快照：玩家在选项里改完间隔后，最迟一个等待周期生效
+        const RefreshConfig cfg = PluginConfig::Instance().Refresh();
         ULONGLONG now = GetTickCount64();
 
         // ---- 按键状态采样（GetAsyncKeyState，纯 Windows API，零 HID 写入）----
@@ -77,7 +75,7 @@ void KeyboardReader::WorkerLoop()
         bool wake = false;
         if (key_down)
         {
-            if (last_key_activity_ms != 0 && now - last_key_activity_ms >= kIdleWakeMs)
+            if (last_key_activity_ms != 0 && now - last_key_activity_ms >= (ULONGLONG)cfg.kb_wake_ms)
                 wake = true;
             last_key_activity_ms = now;
         }
@@ -92,14 +90,14 @@ void KeyboardReader::WorkerLoop()
         {
             need_query = true;                    // ② 键盘唤醒瞬间：查一次
         }
-        else if (now - last_key_activity_ms < kActiveWindowMs &&
-                 now - last_query_ms >= kActivityRefreshMs)
+        else if (now - last_key_activity_ms < (ULONGLONG)cfg.kb_active_ms &&
+                 now - last_query_ms >= (ULONGLONG)cfg.kb_refresh_ms)
         {
             need_query = true;                    // ③ 使用中每 5 秒刷新一次
         }
 
         // 防抖：距上次查询不足 2 秒则跳过
-        if (need_query && now - last_query_ms < kQueryCooldownMs)
+        if (need_query && now - last_query_ms < (ULONGLONG)cfg.kb_cooldown_ms)
             need_query = false;
 
         if (need_query)
@@ -115,7 +113,7 @@ void KeyboardReader::WorkerLoop()
                 {
                     // 打开失败（接收器未连接）：不做离线判定，保持最后读数，
                     // 延迟后重试（可被 Stop 打断）
-                    SleepInterruptible(m_stop, kReconnectDelay);
+                    SleepInterruptible(m_stop, (DWORD)cfg.kb_reconnect_ms);
                     continue;
                 }
                 {

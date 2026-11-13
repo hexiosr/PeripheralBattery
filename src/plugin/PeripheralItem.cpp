@@ -41,7 +41,10 @@ int PeripheralItem::GetItemWidth() const
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     HGDIOBJ old = SelectObject(hdc, font);
     Plugin& p = Plugin::Instance();
-    int w = batdraw::LayoutWidth(hdc, p.Display(), p.DisplayCount());
+    const DisplayConfig cfg = PluginConfig::Instance().Display();
+    int w = p.HasPlaceholder()
+                ? batdraw::PlaceholderWidth(hdc, p.CombinedValueText().c_str(), cfg)
+                : batdraw::LayoutWidth(hdc, p.Display(), p.DisplayCount(), cfg);
     SelectObject(hdc, old);
     DeleteDC(hdc);
     return w;
@@ -51,11 +54,18 @@ int PeripheralItem::GetItemWidthEx(void* hDC) const
 {
     // 实际 hDC 下的精确宽度（主程序不缩放）
     Plugin& p = Plugin::Instance();
-    return batdraw::LayoutWidth((HDC)hDC, p.Display(), p.DisplayCount());
+    const DisplayConfig cfg = PluginConfig::Instance().Display();
+    if (p.HasPlaceholder())
+        return batdraw::PlaceholderWidth((HDC)hDC, p.CombinedValueText().c_str(), cfg);
+    return batdraw::LayoutWidth((HDC)hDC, p.Display(), p.DisplayCount(), cfg);
 }
 
 void PeripheralItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode)
 {
     Plugin& p = Plugin::Instance();
-    batdraw::DrawSegments((HDC)hDC, x, y, w, h, dark_mode, p.Display(), p.DisplayCount());
+    const DisplayConfig cfg = PluginConfig::Instance().Display();
+    if (p.HasPlaceholder())
+        batdraw::DrawPlaceholder((HDC)hDC, x, y, w, h, dark_mode, p.CombinedValueText().c_str(), cfg);
+    else
+        batdraw::DrawSegments((HDC)hDC, x, y, h, dark_mode, p.Display(), p.DisplayCount(), cfg);
 }

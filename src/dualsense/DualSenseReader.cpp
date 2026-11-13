@@ -1,4 +1,5 @@
 #include "DualSenseReader.h"
+#include "PluginConfig.h"
 #include <windows.h>
 
 DualSenseReader::~DualSenseReader()
@@ -44,10 +45,6 @@ void DualSenseReader::UpdateSnapshotLocked(const BatteryReading& reading, bool o
 void DualSenseReader::WorkerLoop()
 {
     DualSenseDevice device;
-    // 连接检测：本地设备枚举（SetupDi 硬件 ID 匹配），零 BT/USB 请求、不影响耗电
-    constexpr ULONGLONG kPnpCheckMs = 2000;   // 每 2s 检查设备是否在系统
-    // 电量读取：纯被动 ReadFile，60s 一次（与最初被动版一致的节奏）
-    constexpr ULONGLONG kReadMs = 60000;
 
     ULONGLONG last_pnp_ms = 0;
     ULONGLONG last_read_ms = 0;
@@ -55,9 +52,11 @@ void DualSenseReader::WorkerLoop()
 
     while (!m_stop)
     {
+        // 每轮取一次配置快照：玩家在选项里改完间隔后，最迟一个等待周期生效
+        const RefreshConfig cfg = PluginConfig::Instance().Refresh();
         ULONGLONG now = GetTickCount64();
 
-        if (last_pnp_ms == 0 || now - last_pnp_ms >= kPnpCheckMs)
+        if (last_pnp_ms == 0 || now - last_pnp_ms >= (ULONGLONG)cfg.ds_pnp_ms)
         {
             last_pnp_ms = now;
 
@@ -79,7 +78,7 @@ void DualSenseReader::WorkerLoop()
             if (just_appeared)
                 last_read_ms = 0;
 
-            if (last_read_ms == 0 || now - last_read_ms >= kReadMs)
+            if (last_read_ms == 0 || now - last_read_ms >= (ULONGLONG)cfg.ds_read_ms)
             {
                 if (!device.IsOpen())
                 {

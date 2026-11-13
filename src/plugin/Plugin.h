@@ -15,7 +15,7 @@
 #include "G7Reader.h"
 #include <string>
 
-// 设备条目数量（与 Plugin.cpp 中 kDevices 表一一对应，新增设备时同步 +1）
+// 设备条目数量（新增设备时同步 +1；显示名可在“显示设置”里改）
 constexpr int kDeviceCount = 4;
 
 // 默认显示顺序（设备索引）：按型号名首字母 A → Z：A5 Ultra、DS5、G7 Pro、G87
@@ -42,6 +42,8 @@ public:
     // 供显示项自绘（UI 线程缓存，由 RefreshDisplay 更新；构造时预填全部设备）
     const DeviceDisplay* Display() const { return m_display; }
     int DisplayCount() const { return m_display_count; }
+    // 全部设备取消勾选：任务栏保留占位项，否则条目消失就无法右键打开设置
+    bool HasPlaceholder() const { return m_placeholder; }
 
     void SetOptionChanged(bool v) { m_option_changed = v; }
     void ApplyOptionsNow() { RefreshDisplay(); } // 选项确定后立即刷新显示
@@ -60,15 +62,15 @@ public:
     void SaveConfig();
 
 private:
-    Plugin(); // 预填自绘显示数组（kDevices 定义在 Plugin.cpp）
+    Plugin(); // 预填自绘显示数组（名称来自 PluginConfig）
     Plugin(const Plugin&) = delete;
 
     void RefreshDisplay();
-    void BuildValueText(const BatterySnapshot& snap, std::wstring& out);
-    void BuildG7ValueText(const BatterySnapshot& snap, std::wstring& out);
-    void BuildKeyboardTooltip(const BatterySnapshot& snap, std::wstring& out);
-    void BuildMouseTooltip(const BatterySnapshot& snap, std::wstring& out);
-    void BuildPadTooltip(const wchar_t* label, const BatterySnapshot& snap, std::wstring& out);
+    void BuildValueText(const BatterySnapshot& snap, std::wstring& out, const std::wstring& no_read);
+    void BuildG7ValueText(const BatterySnapshot& snap, std::wstring& out, const std::wstring& no_read);
+    void BuildKeyboardTooltip(const BatterySnapshot& snap, std::wstring& out, const std::wstring& label);
+    void BuildMouseTooltip(const BatterySnapshot& snap, std::wstring& out, const std::wstring& label);
+    void BuildPadTooltip(const std::wstring& label, const BatterySnapshot& snap, std::wstring& out);
 
 private:
     static Plugin m_instance;
@@ -89,6 +91,7 @@ private:
 
     DeviceDisplay m_display[kDeviceCount]; // 自绘数据（仅勾选设备，按显示顺序）
     int m_display_count = 0;
+    bool m_placeholder = false;
 
     // UI 线程缓存（由 DataRequired 更新，PeripheralItem::GetItemValueText 读取）
     std::wstring m_value_text = L"G87: --% | A5 Ultra: --% | G7 Pro: --% | DS5: --%";

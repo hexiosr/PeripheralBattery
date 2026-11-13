@@ -1,4 +1,5 @@
 #include "MouseReader.h"
+#include "PluginConfig.h"
 #include <windows.h>
 
 MouseReader::~MouseReader()
@@ -88,10 +89,6 @@ static bool CollectBattery(MouseDevice& device, const std::atomic<bool>& cancel,
 void MouseReader::WorkerLoop()
 {
     MouseDevice device;
-    constexpr ULONGLONG kQueryCooldownMs = 2000;     // 采集冷却（防抖）
-    constexpr ULONGLONG kActivityRefreshMs = 5000;   // 使用中每 5 秒刷新一次
-    constexpr ULONGLONG kActiveWindowMs = 30000;     // 最近 30 秒内有活动才视为"使用中"
-    constexpr ULONGLONG kIdleWakeMs = 120000;        // 闲置满 120 秒后的首次活动 = 鼠标唤醒
 
     ULONGLONG last_query_ms = 0;
     ULONGLONG last_activity_ms = 0; // 最近一次检测到鼠标活动的时刻
@@ -100,6 +97,8 @@ void MouseReader::WorkerLoop()
 
     while (!m_stop)
     {
+        // 每轮取一次配置快照：玩家在选项里改完间隔后，最迟一个等待周期生效
+        const RefreshConfig cfg = PluginConfig::Instance().Refresh();
         ULONGLONG now = GetTickCount64();
 
         // ---- 鼠标活动采样（GetCursorPos / GetAsyncKeyState，零 HID 写入）----
@@ -107,7 +106,7 @@ void MouseReader::WorkerLoop()
         bool wake = false;
         if (active)
         {
-            if (last_activity_ms != 0 && now - last_activity_ms >= kIdleWakeMs)
+            if (last_activity_ms != 0 && now - last_activity_ms >= (ULONGLONG)cfg.ms_wake_ms)
                 wake = true;
             last_activity_ms = now;
         }
@@ -122,13 +121,13 @@ void MouseReader::WorkerLoop()
         {
             need_collect = true;                 // ② 鼠标唤醒瞬间：采集一次
         }
-        else if (now - last_activity_ms < kActiveWindowMs &&
-                 now - last_query_ms >= kActivityRefreshMs)
+        else if (now - last_activity_ms < (ULONGLONG)cfg.ms_active_ms &&
+                 now - last_query_ms >= (ULONGLONG)cfg.ms_refresh_ms)
         {
             need_collect = true;                 // ③ 使用中（最近 30 秒内有活动）每 5 秒刷新一次
         }
 
-        if (need_collect && now - last_query_ms < kQueryCooldownMs)
+        if (need_collect && now - last_query_ms < (ULONGLONG)cfg.ms_cooldown_ms)
             need_collect = false;
 
         if (need_collect)

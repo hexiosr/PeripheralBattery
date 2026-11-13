@@ -1,6 +1,8 @@
 # build output
 out/
+out-mingw/
 *.obj
+*.o
 *.lib
 *.exp
 *.pdb
