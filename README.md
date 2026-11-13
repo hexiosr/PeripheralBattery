@@ -58,25 +58,6 @@ build.bat
 
 输出 `out\PeripheralBattery.dll`。
 
-## 目录结构
-
-```
-src/
-  common/                公共头文件（插件接口、HID、电池数据）
-  keyboard/              G87 键盘协议与后台线程
-  mouse/                 A5 Ultra 协议与后台线程
-  dualsense/             DualSense 协议与后台线程
-  g7/                    G7 Pro GIP 监听与后台线程
-  plugin/                插件主类、显示项、绘制与设置对话框
-    BatteryDraw.h        电量圆环绘制与布局
-    PluginConfig.*       可调参数与 ini 读写
-    PeripheralItem.*     显示项（自绘）
-    Plugin.*             插件主类与显示设置对话框
-docs/                    截图
-build.bat                编译脚本
-```
-
-每台设备由 `XxxDevice`（协议）与 `XxxReader`（后台线程）组成，线程通过快照向界面供数；绘制集中在 `BatteryDraw.h`。
 
 ## 已知限制
 
